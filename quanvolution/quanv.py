@@ -298,32 +298,43 @@ class TorchQuanvLayer(nn.Module):
     """
     Quanvolutional layer for Pytorch hybrid architectures
     """
-    def __init__(self, qnode, kernel_size=(2,2), stride=2, out_channels=4):
+    def __init__(self, qnode_layer, kernel_size=(2,2), stride=2, out_channels=4):
         super(TorchQuanvLayer, self).__init__()
 
         self.kernel_size = kernel_size
         self.stride = stride
         self.out_channels = out_channels
 
-        self.circuit = qnode
+        self.qnode = qnode_layer
+
+    def quanv(self, inputs, in_channels=1):
+        """
+        Helper function to perform single channel 2D quanvolution
+        :param inputs: One channel of the input batch
+        :param in_channels: The number of channels in the original input image (which helps calculate output shape for
+        a single channel)
+        :return:
+        """
+
+        input_patches = torch.nn.functional.unfold(inputs, kernel_size=self.kernel_size, stride=self.stride)
+
+        convolved_patches = torch.stack([self.qnode(inputs=x) for x in torch.unbind(input_patches, dim=-1)])
+
+        out_shape = (inputs.shape[0], self.out_channels // in_channels, (inputs.shape[2] - self.kernel_size[0]) // self.stride + 1,
+                     (inputs.shape[3] - self.kernel_size[1]) // self.stride + 1)
+
+        out = convolved_patches.view(out_shape)
+
+        return out
 
     def forward(self, inputs):
         """
-        Defines the convolution operation for the forward pass
+        Applies the quanvolution operation for the forward pass
         Args:
             img: An image
 
         Returns:
 
         """
-
-        input_patches = torch.nn.functional.unfold(inputs, kernel_size=self.kernel_size, stride=self.stride)
-
-        convolved_patches = torch.stack([self.circuit(inputs=x) for x in torch.unbind(input_patches, dim=-1)])
-
-        out_shape = (inputs.shape[0], convolved_patches.shape[-1], (inputs.shape[2]-self.kernel_size[0]) // self.stride + 1, (inputs.shape[3]-self.kernel_size[1]) // self.stride + 1)
-
-
-        out = convolved_patches.view(out_shape)
-
-        return out
+        # unstack the different channels, apply convolutions, restack together
+        return torch.cat([self.quanv(x.unsqueeze(1), in_channels=inputs.shape[1]) for x in torch.unbind(inputs,dim=1)], 1)
