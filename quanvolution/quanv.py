@@ -291,78 +291,39 @@ class Quanv2D(Conv2D):
 
 import torch
 from torch import nn
-
-
 import pennylane as qml
-from pennylane import numpy as np
-from pennylane.templates import RandomLayers
 
 
-class QonvLayer(nn.Module):
-    def __init__(self, stride=2, device="default.qubit", wires=4, circuit_layers=4, n_rotations=8, out_channels=4,
-                 seed=None):
-        super(QonvLayer, self).__init__()
+class TorchQuanvLayer(nn.Module):
+    """
+    Quanvolutional layer for Pytorch hybrid architectures
+    """
+    def __init__(self, qnode, kernel_size=(2,2), stride=2, out_channels=4):
+        super(TorchQuanvLayer, self).__init__()
 
-        # init device
-        self.wires = wires
-        self.dev = qml.device(device, wires=self.wires)
-
+        self.kernel_size = kernel_size
         self.stride = stride
-        self.out_channels = min(out_channels, wires)
+        self.out_channels = out_channels
 
-        if seed is None:
-            seed = np.random.randint(low=0, high=10e6)
+        self.circuit = qnode
 
-        print("Initializing Circuit with random seed", seed)
+    def forward(self, inputs):
+        """
+        Defines the convolution operation for the forward pass
+        Args:
+            img: An image
 
-        # random circuits
-        @qml.qnode(device=self.dev)
-        def circuit(inputs, weights):
-            n_inputs = 4
-            # Encoding of 4 classical input values
-            for j in range(n_inputs):
-                qml.RY(inputs[j], wires=j)
-            # Random quantum circuit
-            RandomLayers(weights, wires=list(range(self.wires)), seed=seed)
+        Returns:
 
-            # Measurement producing 4 classical output values
-            return [qml.expval(qml.PauliZ(j)) for j in range(self.out_channels)]
+        """
 
-        weight_shapes = {"weights": [circuit_layers, n_rotations]}
-        self.circuit = qml.qnn.TorchLayer(circuit, weight_shapes=weight_shapes)
+        input_patches = torch.nn.functional.unfold(inputs, kernel_size=self.kernel_size, stride=self.stride)
 
-    def draw(self):
-        # build circuit by sending dummy data through it
-        _ = self.circuit(inputs=torch.from_numpy(np.zeros(4)))
-        print(self.circuit.qnode.draw())
-        self.circuit.zero_grad()
+        convolved_patches = torch.stack([self.circuit(inputs=x) for x in torch.unbind(input_patches, dim=-1)])
 
-    def forward(self, img):
-        bs, h, w, ch = img.size()
-        if ch > 1:
-            img = img.mean(axis=-1).reshape(bs, h, w, 1)
+        out_shape = (inputs.shape[0], convolved_patches.shape[-1], (inputs.shape[2]-self.kernel_size[0]) // self.stride + 1, (inputs.shape[3]-self.kernel_size[1]) // self.stride + 1)
 
-        kernel_size = 2
-        h_out = (h - kernel_size) // self.stride + 1
-        w_out = (w - kernel_size) // self.stride + 1
 
-        out = torch.zeros((bs, h_out, w_out, self.out_channels))
-
-        # Loop over the coordinates of the top-left pixel of 2X2 squares
-        for b in range(bs):
-            for j in range(0, h_out, self.stride):
-                for k in range(0, w_out, self.stride):
-                    # Process a squared 2x2 region of the image with a quantum circuit
-                    q_results = self.circuit(
-                        inputs=torch.Tensor([
-                            img[b, j, k, 0],
-                            img[b, j, k + 1, 0],
-                            img[b, j + 1, k, 0],
-                            img[b, j + 1, k + 1, 0]
-                        ])
-                    )
-                    # Assign expectation values to different channels of the output pixel (j/2, k/2)
-                    for c in range(self.out_channels):
-                        out[b, j // kernel_size, k // kernel_size, c] = q_results[c]
+        out = convolved_patches.view(out_shape)
 
         return out
